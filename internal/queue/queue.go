@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 )
@@ -26,10 +27,10 @@ type jobResult struct {
 }
 
 // New creates a new Queue with the specified amount of workers
-func New(ctx context.Context, workers int, handler func(context.Context, interface{}) (interface{}, error)) *Queue {
+func New(ctx context.Context, workers int, queueSize int, handler func(context.Context, interface{}) (interface{}, error)) *Queue {
 	queue := &Queue{
 		workers: workers,
-		queue:   make(chan job),
+		queue:   make(chan job, queueSize),
 		handler: handler,
 		ctx:     ctx,
 	}
@@ -88,19 +89,28 @@ func (q *Queue) Process(ctx context.Context, data interface{}) (interface{}, err
 	}
 
 	resultChan := make(chan jobResult)
+	defer close(resultChan)
 
-	q.queue <- job{
+	select {
+	// Attempt to queue the job
+	case q.queue <- job{
 		data:    data,
 		result:  resultChan,
 		context: ctx,
+	}:
+		result := <-resultChan
+
+		if result.err != nil {
+			return nil, result.err
+		}
+
+		return result.result, nil
+	// If the queue is full of jobs waiting to be processed, just drop the job and return an error
+	default:
+		return nil, ErrQueueFull
 	}
-
-	result := <-resultChan
-	close(resultChan)
-
-	if result.err != nil {
-		return nil, result.err
-	}
-
-	return result.result, nil
 }
+
+var (
+	ErrQueueFull = errors.New("queue full")
+)
